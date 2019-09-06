@@ -31,6 +31,7 @@ import base64
 import requests
 import json
 import re
+import os
 
 try:
     from urllib.parse import parse_qs, urlencode, urlparse
@@ -44,6 +45,7 @@ from . import version
 __version__ = version.__version__
 
 FACEBOOK_GRAPH_URL = "https://graph.facebook.com/"
+FACEBOOK_GRAPH_VIDEO_URL = "https://graph-video.facebook.com/"
 FACEBOOK_WWW_URL = "https://www.facebook.com/"
 FACEBOOK_OAUTH_DIALOG_PATH = "dialog/oauth?"
 VALID_API_VERSIONS = ["2.10", "2.11", "2.12", "3.0", "3.1", "3.2", "3.3"]
@@ -236,6 +238,78 @@ class GraphAPI(object):
             method="POST",
         )
 
+    def put_resumable_video(self, object_id, video_path, **kwargs):
+        """
+        Upload an video using multipart/form-data and resumable mode.
+
+        https://developers.facebook.com/docs/graph-api/video-uploads
+
+        Return:
+            - video_id - A facebook id linked to uploaded video
+        """
+        statinfo = os.stat(video_path)
+
+        start_response = self.request(
+            "{0}/{1}/videos".format(self.version, object_id),
+            post_args={
+                'upload_phase': 'start',
+                'file_size': statinfo.st_size,
+            },
+            method="POST",
+            use_graph_video=True
+        )
+
+        upload_session_id = start_response['upload_session_id']
+
+        # Open file stream
+        with open(video_path, 'rb') as f:
+
+            current_response = start_response
+
+            # Do not stop looping until all is uploaded
+            while current_response['start_offset'] != current_response['end_offset']:
+
+                start_offset = int(current_response['start_offset'])
+                size_to_read = int(current_response['end_offset']) - int(current_response['start_offset'])
+
+                # Seek to chunk to upload
+                f.seek(start_offset)
+
+                current_response = self.request(
+                    "{0}/{1}/videos".format(self.version, object_id),
+                    # Use files= here instead of post_args is very important
+                    post_args={
+                        'upload_phase': 'transfer',
+                        'start_offset': start_offset,
+                        'upload_session_id': upload_session_id,
+                    },
+                    files={
+                        'video_file_chunk': f.read(size_to_read),
+                    },
+                    method="POST",
+                    use_graph_video=True
+                )
+
+        finish_post_args = {
+            'upload_phase': 'finish',
+            'upload_session_id': upload_session_id,
+        }
+
+        # Use kwargs only for finish request
+        finish_post_args.update(kwargs)
+
+        finish_response = self.request(
+            "{0}/{1}/videos".format(self.version, object_id),
+            post_args=finish_post_args,
+            method="POST",
+            use_graph_video=True
+        )
+
+        if finish_response['success'] is True:
+            return start_response['video_id']
+
+        raise GraphAPIError('Something went wrong during upload : %s' % finish_response)
+
     def get_version(self):
         """Fetches the current version number of the Graph API being used."""
         args = {"access_token": self.access_token}
@@ -259,7 +333,13 @@ class GraphAPI(object):
             raise GraphAPIError("API version number not available")
 
     def request(
-        self, path, args=None, post_args=None, files=None, method=None
+        self,
+        path,
+        args=None,
+        post_args=None,
+        files=None,
+        method=None,
+        use_graph_video=False,
     ):
         """Fetches the given path in the Graph API.
 
@@ -291,7 +371,10 @@ class GraphAPI(object):
         try:
             response = self.session.request(
                 method or "GET",
-                FACEBOOK_GRAPH_URL + path,
+                '%s%s' % (
+                    FACEBOOK_GRAPH_VIDEO_URL if use_graph_video else FACEBOOK_GRAPH_URL,
+                    path
+                ),
                 timeout=self.timeout,
                 params=args,
                 data=post_args,

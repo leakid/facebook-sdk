@@ -203,6 +203,25 @@ class GraphAPI(object):
             method="POST",
         )
 
+    def update_object(self, object_id, **data):
+        """Update/writes the given object_id on the graph
+
+        For example,
+
+            graph.update_object(14554541121, message="Hello, world")
+
+        Certain operations require extended permissions. See
+        https://developers.facebook.com/docs/facebook-login/permissions
+        for details about permissions.
+
+        """
+        assert self.access_token, "Write operations require an access token"
+        return self.request(
+            "{0}/{1}".format(self.version, object_id),
+            post_args=data,
+            method="POST",
+        )
+
     def put_comment(self, object_id, message):
         """Writes the given comment on the given post."""
         return self.put_object(object_id, "comments", message=message)
